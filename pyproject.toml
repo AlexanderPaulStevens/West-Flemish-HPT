@@ -5,9 +5,9 @@ build-backend = "hatchling.build"
 [project]
 name = "wfgpt"
 dynamic = ["version"]
-description = ''
+description = 'A West-Flemish GPT model.'
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = "MIT"
 keywords = []
 authors = [
@@ -16,15 +16,20 @@ authors = [
 classifiers = [
   "Development Status :: 4 - Beta",
   "Programming Language :: Python",
-  "Programming Language :: Python :: 3.8",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: Implementation :: CPython",
   "Programming Language :: Python :: Implementation :: PyPy",
 ]
-dependencies = []
+dependencies = [
+  "jaxtyping",
+  "pytorch_lightning",
+  "beartype",
+  "pandas",
+  "numpy",
+  "torch",
+]
 
 [project.urls]
 Documentation = "https://github.com/alexander stevens/wfgpt#readme"
@@ -33,13 +38,6 @@ Source = "https://github.com/alexander stevens/wfgpt"
 
 [tool.hatch.version]
 path = "src/wfgpt/__about__.py"
-
-[tool.hatch.envs.types]
-extra-dependencies = [
-  "mypy>=1.0.0",
-]
-[tool.hatch.envs.types.scripts]
-#check = "mypy --install-types --non-interactive {args:src/wfgpt tests}"
 
 [tool.coverage.run]
 source_pkgs = ["wfgpt", "tests"]
@@ -59,10 +57,3 @@ exclude_lines = [
   "if __name__ == .__main__.:",
   "if TYPE_CHECKING:",
 ]
-
-[tool.hatch.envs.dev]
-extra-dependencies = [
-    "rich>=10.10",
-]
-[tool.hatch.envs.dev.scripts]
-console = "python ./scr/hatch/wfgpt/main.py"
