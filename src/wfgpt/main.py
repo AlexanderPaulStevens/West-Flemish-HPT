@@ -36,7 +36,7 @@ if __name__ == '__main__':
     model = GPT(GPTConfig(**config['model_args'])
     )
 
-    outfolder = os.path.join("out", "checkpoints")
+    outfolder = os.path.join("src/wfgpt/out", "checkpoints")
     #if not os.path.exists(outfolder):
     #    os.makedirs(outfolder)
 
