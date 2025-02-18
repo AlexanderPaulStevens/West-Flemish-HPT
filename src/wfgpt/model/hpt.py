@@ -43,7 +43,7 @@ class GPT(pl.LightningModule):
 
         print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
 
-        self.loss = F.cross_entropy()
+        self.loss = nn.CrossEntropyLoss()
 
     def get_num_params(self, non_embedding=True):
         n_params = sum(p.numel() for p in self.parameters())
@@ -59,7 +59,7 @@ class GPT(pl.LightningModule):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx):
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         pos = torch.arange(0, t, dtype=torch.long)
@@ -73,10 +73,7 @@ class GPT(pl.LightningModule):
 
         return x
 
-    def configure_optimizers(self):
-        weight_decay = 0.01  # Example value, adjust as needed
-        learning_rate = 3e-4  # Example value, adjust as needed
-        betas = (0.9, 0.95)  # Example values, adjust as needed
+    def configure_optimizers(self, weight_decay, learning_rate, betas):
 
         param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
         decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
@@ -91,7 +88,7 @@ class GPT(pl.LightningModule):
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
         return optimizer
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch):
         idx, targets = batch
         x = self(idx, targets)
         
@@ -104,17 +101,3 @@ class GPT(pl.LightningModule):
 
         self.log('train_loss', loss)
         return {'loss': loss}
-
-    @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
-        for _ in range(max_new_tokens):
-            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
-            logits, _ = self(idx_cond)
-            logits = logits[:, -1, :] / temperature
-            if top_k is not None:
-                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = -float('Inf')
-            probs = F.softmax(logits, dim=-1)
-            idx_next = torch.multinomial(probs, num_samples=1)
-            idx = torch.cat((idx, idx_next), dim=1)
-        return idx
