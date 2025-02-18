@@ -1,11 +1,12 @@
 import pytorch_lightning as pl
 from torch import nn
 from torch.nn import functional as F
-from torch.nn import LayerNorm
+
 import math
 import torch
 import inspect
 from dataclasses import dataclass
+from base import LayerNorm
 from base import Block
 
 @dataclass
@@ -42,6 +43,8 @@ class GPT(pl.LightningModule):
 
         print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
 
+        self.loss = F.cross_entropy()
+
     def get_num_params(self, non_embedding=True):
         n_params = sum(p.numel() for p in self.parameters())
         if non_embedding:
@@ -57,10 +60,9 @@ class GPT(pl.LightningModule):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None):
-        device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, t, dtype=torch.long, device=device)
+        pos = torch.arange(0, t, dtype=torch.long)
 
         tok_emb = self.transformer.wte(idx)
         pos_emb = self.transformer.wpe(pos)
@@ -69,26 +71,12 @@ class GPT(pl.LightningModule):
             x = block(x)
         x = self.transformer.ln_f(x)
 
-        if targets is not None:
-            logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
-        else:
-            logits = self.lm_head(x[:, [-1], :])
-            loss = None
-
-        return logits, loss
-
-    def training_step(self, batch, batch_idx):
-        idx, targets = batch
-        _, loss = self(idx, targets)
-        self.log('train_loss', loss)
-        return loss
+        return x
 
     def configure_optimizers(self):
         weight_decay = 0.01  # Example value, adjust as needed
         learning_rate = 3e-4  # Example value, adjust as needed
         betas = (0.9, 0.95)  # Example values, adjust as needed
-        device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
         decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
@@ -98,10 +86,24 @@ class GPT(pl.LightningModule):
             {'params': nodecay_params, 'weight_decay': 0.0}
         ]
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and device_type == 'cuda'
+        use_fused = fused_available
         extra_args = dict(fused=True) if use_fused else dict()
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
         return optimizer
+
+    def training_step(self, batch, batch_idx):
+        idx, targets = batch
+        x = self(idx, targets)
+        
+        if targets is not None:
+            logits = self.lm_head(x)
+            loss = self.loss(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+        else:
+            logits = self.lm_head(x[:, [-1], :])
+            loss = None
+
+        self.log('train_loss', loss)
+        return {'loss': loss}
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
