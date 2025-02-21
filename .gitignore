@@ -1,0 +1,4 @@
+*.ckpt
+lightning_logs/
+*.whl
+__pycache__
