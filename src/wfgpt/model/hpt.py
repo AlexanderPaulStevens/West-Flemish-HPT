@@ -5,55 +5,72 @@ from torch.nn import functional as F
 
 import math
 
-from dataclasses import dataclass
 from model.base import LayerNorm, Block
+from model.config import GPTConfig
+from beartype import beartype
+from beartype import typing as tp
+from jaxtyping import Num, Int
+import numpy as np
+import logging
 
-@dataclass
-class GPTConfig:
-    block_size: int = 1024
-    vocab_size: int = 50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
-    n_layer: int = 12
-    n_head: int = 12
-    n_embd: int = 768
-    dropout: float = 0.0
-    bias: bool = True  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    weight_decay: float = 0.1
-    learning_rate: float = 6e-4
-    betas: tuple = (0.9, 0.95)
+logger = logging.getLogger(__name__)
 
+
+@beartype
 class GPT(pl.LightningModule):
-    def __init__(self, config):
+    def __init__(self, config: GPTConfig):
+        """GPT model, based on Andrej Karpathy's nanoGPT with Pytorch Lightning.
+
+        Args:
+            config (GPTConfig): Configuration to train the model.
+        """
         super().__init__()
-        assert config.vocab_size is not None
-        assert config.block_size is not None
         self.config = config
 
-        self.transformer = nn.ModuleDict(dict(
-            wte=nn.Embedding(config.vocab_size, config.n_embd),
-            wpe=nn.Embedding(config.block_size, config.n_embd),
-            drop=nn.Dropout(config.dropout),
-            h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            ln_f=LayerNorm(config.n_embd, bias=config.bias),
-        ))
+        # init model components
+        self.transformer = nn.ModuleDict(
+            dict(
+                wte=nn.Embedding(config.vocab_size, config.n_embd),
+                wpe=nn.Embedding(config.block_size, config.n_embd),
+                drop=nn.Dropout(config.dropout),
+                h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+                ln_f=LayerNorm(config.n_embd, bias=config.bias),
+            )
+        )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.transformer.wte.weight = self.lm_head.weight  # Weight tying
+        self.loss = nn.CrossEntropyLoss(ignore_index=-1)
 
         self.apply(self._init_weights)
         for pn, p in self.named_parameters():
-            if pn.endswith('c_proj.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer))
+            if pn.endswith("c_proj.weight"):
+                torch.nn.init.normal_(
+                    p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer)
+                )
 
-        print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
+        logger.info("Number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
 
-        self.loss = nn.CrossEntropyLoss(ignore_index=-1)
+    def get_num_params(self, non_embedding: bool = True) -> int:
+        """Gets the number of parameters of the model.
 
-    def get_num_params(self, non_embedding=True):
+        Args:
+            non_embedding (bool): If True (default), the number of parameters of the embeddings is not considered.
+
+        Returns:
+            int: Number of parameters of the model.
+        """
         n_params = sum(p.numel() for p in self.parameters())
         if non_embedding:
-            n_params -= self.transformer.wpe.weight.numel()
+            n_params -= int(self.transformer.wpe.weight.numel())
         return n_params
 
-    def _init_weights(self, module):
+    def _init_weights(self, module: nn.Module):
+        """Initialize the weights of the model.
+
+        Args:
+            module (nn.Module): Module for which the weights should be initialized.
+        """
+
         if isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
@@ -61,9 +78,24 @@ class GPT(pl.LightningModule):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
-        b, t = idx.size()
-        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+    def forward(
+        self,
+        idx: Int[torch.Tensor, "N D"],
+        targets: Num[torch.Tensor, "N D"] | None = None,
+    ) -> Num[torch.Tensor, "N D"]:
+        """Forward pass of the model, required by Pytorch Lightning.
+
+        Args:
+            idx (torch.Tensor): Input tensor.
+            targets (torch.Tensor): Target tensor.
+
+        Returns:
+            torch.Tensor: Output tensor as logits.
+        """
+        _, t = idx.size()
+        assert t <= self.config.block_size, ValueError(
+            f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        )
         pos = torch.arange(0, t, dtype=torch.long)
 
         tok_emb = self.transformer.wte(idx)
@@ -79,44 +111,69 @@ class GPT(pl.LightningModule):
 
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            logits = self.lm_head(
+                x[:, [-1], :]
+            )  # note: using list [-1] to preserve the time dim
 
         return logits
 
-    def configure_optimizers(self):
+    def training_step(
+        self, batch: list[Num[torch.Tensor, "N D"]]
+    ) -> tp.Dict[str, Num[torch.Tensor, ""]]:
+        """Training step of the model, required by Pytorch Lightning.
 
-        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
-        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
-        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
-        optim_groups = [
-            {'params': decay_params, 'weight_decay': self.config.weight_decay},
-            {'params': nodecay_params, 'weight_decay': 0.0}
-        ]
+        Args:
+            batch (list): Batch of data.
 
-        extra_args = {}
+        Returns:
+            Dict[str, torch.Tensor]: Loss of the model for given batch.
+        """
 
-        optimizer = torch.optim.AdamW(optim_groups, lr=self.config.learning_rate, betas=self.config.betas, **extra_args)
-        return optimizer
-
-    def training_step(self, batch):
         idx, targets = batch
         logits = self(idx, targets)
-        
+
         loss = self.loss(logits.view(-1, logits.size(-1)), targets.view(-1))
 
-        self.log('train_loss', loss)
-        return {'loss': loss}
+        self.log("train_loss", loss)
+        return {"loss": loss}
+
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        """Defines optimizer and scheduler for the model, required by Pytorch Lightning."""
+
+        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
+        decay_params = [p for _, p in param_dict.items() if p.dim() >= 2]
+        nodecay_params = [p for _, p in param_dict.items() if p.dim() < 2]
+        optim_groups = [
+            {"params": decay_params, "weight_decay": self.config.weight_decay},
+            {"params": nodecay_params, "weight_decay": 0.0},
+        ]
+        optimizer = torch.optim.AdamW(
+            optim_groups,
+            lr=self.config.learning_rate,
+            betas=self.config.betas,
+        )
+        return optimizer
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
-        """
-        Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
+    def generate(
+        self,
+        idx: Num[torch.Tensor, "N D"],
+        max_new_tokens: int,
+        temperature: float = 1.0,
+        top_k: int | None = None,
+    ):
+        """Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
+        self.eval()
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
-            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
+            idx_cond = (
+                idx
+                if idx.size(1) <= self.config.block_size
+                else idx[:, -self.config.block_size :]
+            )
             # forward the model to get the logits for the index in the sequence
             logits = self(idx_cond)
             # pluck the logits at the final step and scale by desired temperature
@@ -124,7 +181,7 @@ class GPT(pl.LightningModule):
             # optionally crop the logits to only the top k options
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = -float('Inf')
+                logits[logits < v[:, [-1]]] = -float("Inf")
             # apply softmax to convert logits to (normalized) probabilities
             probs = F.softmax(logits, dim=-1)
             # sample from the distribution
