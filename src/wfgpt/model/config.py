@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 @beartype
 @dataclass
+
 class GPTConfig():
     def __init__(self):
         """GPT Configurations to train the model.

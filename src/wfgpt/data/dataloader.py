@@ -198,13 +198,3 @@ class WestFlemishDataModule(L.LightningDataModule):
             collate_fn=self.collate_fn,
             persistent_workers=self.num_workers > 0
         )
-
-# Example usage
-if __name__ == "__main__":
-    data_module = WestFlemishDataModule(batch_size=4, num_workers=0)
-    data_module.setup()
-    train_loader = data_module.train_dataloader()
-    for batch in train_loader:
-        print("Batch input_ids shape:", batch["input_ids"].shape)
-        print("Batch labels shape:", batch["labels"].shape)
-        break

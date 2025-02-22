@@ -5,6 +5,7 @@ from torch.nn import functional as F
 import math
 
 from model.base import LayerNorm, Block
+
 from beartype import beartype
 from beartype import typing as tp
 from jaxtyping import Num, Int
@@ -32,6 +33,7 @@ class ScratchGPT(L.LightningModule):
         # init model components
         self.transformer = nn.ModuleDict(
             dict(
+
                 wte=nn.Embedding(model_params['vocab_size'], model_params['n_embd']),
                 wpe=nn.Embedding(model_params['block_size'], model_params['n_embd']),
                 drop=nn.Dropout(model_params['dropout']),
@@ -40,6 +42,7 @@ class ScratchGPT(L.LightningModule):
             )
         )
         self.lm_head = nn.Linear(model_params['n_embd'], model_params['vocab_size'], bias=False)
+
         self.transformer.wte.weight = self.lm_head.weight  # Weight tying
         self.loss = nn.CrossEntropyLoss(ignore_index=-1)
 
@@ -47,7 +50,9 @@ class ScratchGPT(L.LightningModule):
         for pn, p in self.named_parameters():
             if pn.endswith("c_proj.weight"):
                 torch.nn.init.normal_(
+
                     p, mean=0.0, std=0.02 / math.sqrt(2 * model_params['n_layer'])
+
                 )
 
         logger.info("Number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
@@ -84,7 +89,9 @@ class ScratchGPT(L.LightningModule):
         self,
         idx: Int[torch.Tensor, "N D"],
         targets: Num[torch.Tensor, "N D"] | None = None,
-    ) -> Num[torch.Tensor, "N D T"]:
+
+    ) -> Num[torch.Tensor, "N D"]:
+
         """Forward pass of the model, required by Pytorch Lightning.
 
         Args:
@@ -95,8 +102,10 @@ class ScratchGPT(L.LightningModule):
             torch.Tensor: Output tensor as logits.
         """
         _, t = idx.size()
+
         assert t <= self.model_params['block_size'], ValueError(
             f"Cannot forward sequence of length {t}, block size is only {self.model_params['block_size']}"
+
         )
         pos = torch.arange(0, t, dtype=torch.long)
 
@@ -146,13 +155,17 @@ class ScratchGPT(L.LightningModule):
         decay_params = [p for _, p in param_dict.items() if p.dim() >= 2]
         nodecay_params = [p for _, p in param_dict.items() if p.dim() < 2]
         optim_groups = [
+
             {"params": decay_params, "weight_decay": self.model_params['weight_decay']},
+
             {"params": nodecay_params, "weight_decay": 0.0},
         ]
         optimizer = torch.optim.AdamW(
             optim_groups,
+
             lr=self.model_params['learning_rate'],
             betas=self.model_params['betas'],
+
         )
         return optimizer
 
@@ -173,8 +186,10 @@ class ScratchGPT(L.LightningModule):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = (
                 idx
+
                 if idx.size(1) <= self.model_params['block_size']
                 else idx[:, -self.model_params['block_size'] :]
+
             )
             # forward the model to get the logits for the index in the sequence
             logits = self(idx_cond)
@@ -192,7 +207,7 @@ class ScratchGPT(L.LightningModule):
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx
-    
+
 class LitLLM(L.LightningModule):
     def __init__(self, tokenizer: tp.Any):
         """Lightning Module for fine-tuning a LoRA-augmented GPT model.
