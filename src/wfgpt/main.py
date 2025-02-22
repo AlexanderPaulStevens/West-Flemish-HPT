@@ -1,60 +1,68 @@
-import torch
-import pytorch_lightning as pl
-from model.hpt import GPT, GPTConfig
 import os
-from data.dataloader import GPTDataModule
-from pytorch_lightning.callbacks import ModelCheckpoint
+import sys
+sys.dont_write_bytecode = True
+import lightning as L
+from lightning.pytorch.callbacks import ModelCheckpoint
+from model.sampler import sample_from_model
+from model.hpt import ScratchGPT
+from transformers import AutoTokenizer
+from model.hpt import LitLLM
+from model.config import GPTConfig
+from data.dataloader import GPTDataModule, WestFlemishData
+import numpy as np
+from model.trainer import train_model, get_trainer
 
-import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-# Initialize configuration
-config = {
-    'model_args': {
-        'n_layer': 4, 'n_head': 4, 'n_embd': 384, 
-        'bias': False, 'vocab_size': 64, 'dropout': 0.0,
-        'weight_decay': 1e-1, 'learning_rate': 6e-4, 'betas': (0.9, 0.99),
-    },
-    'warmup_iters': 20,
-    'lr_decay_iters': 20,
-    'min_lr': 1e-3,
-    'data_dir': 'src/wfgpt/data/',
-    'block_size': 64,
-    'batch_size': 12,
-    'num_workers': 2,
-}
+if __name__ == "__main__":
+    # Set seed for reproducibility
+    L.seed_everything(42)
+    init_from = "scratch"  # Options: "scratch" or "finetuning"
 
-# Update model_args with the correct vocab_size
-config['model_args']['vocab_size'] = 65 # based on the meta.pkl file from Karpathy's blog
+    if init_from == "scratch":
+        # Load BERT tokenizer and set vocab_size
+        tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+        config = GPTConfig()
+        config.vocab_size = tokenizer.vocab_size  # ~30,522
 
-if __name__ == '__main__':
-    # Initialize data and model
-    data_module = GPTDataModule(
-        config['data_dir'], config['block_size'], config['batch_size'], config['num_workers']
-    )
+        # Determine block_size from encodings before initializing data_module
+        input_ids = np.load(config.encodings_path)
+        config.block_size = input_ids.shape[1]
+
+        # Setup data module with BERT encodings
+        data_module = GPTDataModule(
+            data_dir=config.data_dir,
+            block_size=config.block_size,
+            batch_size=config.batch_size,
+            num_workers=config.num_workers,
+            encodings_dir=config.encodings_dir
+        )
+        data_module.setup()  # Load encodings
+
+        outfolder = os.path.join("src/wfgpt/out", "checkpoints")
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=outfolder, filename="step_{step}", every_n_train_steps=10,
+            save_top_k=-1, monitor=None
+        )
+        trainer = get_trainer()
+
+        architecture = ScratchGPT(config.model_args)
+
+        model = train_model(architecture, trainer, init_from, config=config, data_module=data_module)
+
+    elif init_from == "finetuning":
+        # Setup for fine-tuning
+        tokenizer = AutoTokenizer.from_pretrained("microsoft/phi-2")
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        dataloader = WestFlemishData()
+        
+        trainer = get_trainer()
+
+        architecture = LitLLM(tokenizer=tokenizer)
+
+        model = train_model(architecture, trainer, init_from, tokenizer=tokenizer, dataloader=dataloader)
+
+    sample_from_model(model, init_from, tokenizer=tokenizer)
+
     
-    model = GPT(GPTConfig(**config['model_args'])
-    )
-
-    outfolder = os.path.join("src/wfgpt/out", "checkpoints")
-    #if not os.path.exists(outfolder):
-    #    os.makedirs(outfolder)
-
-     # Define the checkpoint callback
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=outfolder,  # Directory to save checkpoints
-        filename="step_{step}",  # Optional: Custom filename format
-        every_n_train_steps=10,  # Save every 10 training steps
-        save_top_k=-1,  # Save all checkpoints (set to 1 to keep only the latest)
-        monitor=None  # Do not monitor any metric (save based on steps only)
-    )
-    
-    trainer = pl.Trainer(
-        max_steps=100,
-        accelerator="gpu" if torch.cuda.is_available() else "cpu",
-        devices=torch.cuda.device_count() if torch.cuda.is_available() else 1,
-        callbacks=[checkpoint_callback],
-    )
-
-    # Train the model
-    trainer.fit(model, datamodule=data_module)
