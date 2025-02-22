@@ -64,5 +64,3 @@ if __name__ == "__main__":
         model = train_model(architecture, trainer, init_from, tokenizer=tokenizer, dataloader=dataloader)
 
     sample_from_model(model, init_from, tokenizer=tokenizer)
-
-    
