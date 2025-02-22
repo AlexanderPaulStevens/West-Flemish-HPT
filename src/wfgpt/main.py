@@ -8,7 +8,7 @@ from model.hpt import ScratchGPT
 from transformers import AutoTokenizer
 from model.hpt import LitLLM
 from model.config import GPTConfig
-from data.dataloader import GPTDataModule, WestFlemishData
+from data.dataloader import GPTDataModule, WestFlemishDataModule
 import numpy as np
 from model.trainer import train_model, get_trainer
 
@@ -17,7 +17,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 if __name__ == "__main__":
     # Set seed for reproducibility
     L.seed_everything(42)
-    init_from = "scratch"  # Options: "scratch" or "finetuning"
+    init_from = "finetuning"  # Options: "scratch" or "finetuning"
 
     if init_from == "scratch":
         # Load BERT tokenizer and set vocab_size
@@ -55,12 +55,13 @@ if __name__ == "__main__":
         tokenizer = AutoTokenizer.from_pretrained("microsoft/phi-2")
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        dataloader = WestFlemishData()
+        data_module = WestFlemishDataModule()
+        data_module.setup()  # Load encodings
         
         trainer = get_trainer()
 
         architecture = LitLLM(tokenizer=tokenizer)
 
-        model = train_model(architecture, trainer, init_from, tokenizer=tokenizer, dataloader=dataloader)
+        model = train_model(architecture, trainer, init_from, tokenizer=tokenizer, data_module=data_module)
 
     sample_from_model(model, init_from, tokenizer=tokenizer)

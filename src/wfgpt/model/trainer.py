@@ -4,15 +4,15 @@ from litgpt.lora import merge_lora_weights
 import shutil
 import lightning as L
 
-def train_model(model, trainer, init_from, tokenizer=None, dataloader=None, data_module=None, config=None):
+def train_model(model, trainer, init_from, tokenizer=None, data_module=None, config=None):
     if init_from == "scratch":
         if config is None or data_module is None:
             raise ValueError("Config and data_module are required for scratch training")
         trainer.fit(model, datamodule=data_module)
         return model
     elif init_from == "finetuning":
-        if tokenizer is None or dataloader is None:
-            raise ValueError("Tokenizer and dataloader are required for fine-tuning")
+        if tokenizer is None or data_module is None:
+            raise ValueError("Tokenizer and data_module are required for fine-tuning")
         finetuned_path = "checkpoints/finetuned_phi2_westflemish.pth"
         
         if os.path.exists(finetuned_path):
@@ -21,8 +21,7 @@ def train_model(model, trainer, init_from, tokenizer=None, dataloader=None, data
             model.model.load_state_dict(state_dict)
         else:
             print("No fine-tuned model found. Training the model...")
-            with trainer.init_module(empty_init=True):
-                trainer.fit(model, dataloader)
+            trainer.fit(model, datamodule=data_module)
             merge_lora_weights(model.model)
             os.makedirs(os.path.dirname(finetuned_path), exist_ok=True)
             torch.save(model.model.state_dict(), finetuned_path)

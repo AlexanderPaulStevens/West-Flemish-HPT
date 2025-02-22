@@ -229,7 +229,7 @@ class LitLLM(L.LightningModule):
         litgpt.lora.mark_only_lora_as_trainable(self.model)
         self.save_hyperparameters(ignore=['tokenizer'])
 
-    def setup(self) -> None:
+    def setup(self, stage= None) -> None:
         """Setup method to load model weights or initialize from pretrained.
 
         Args:
@@ -261,6 +261,7 @@ class LitLLM(L.LightningModule):
             Loss tensor
         """
         input_ids, targets = batch["input_ids"], batch["labels"]
+
         logits = self.model(input_ids)
         loss = litgpt.utils.chunked_cross_entropy(
             logits[..., :-1, :], 
